@@ -3,8 +3,22 @@ const cors = require('cors');
 const WebTorrent = require('webtorrent');
 const SysTray = require('systray2').default;
 
+// Prevent companion process from crashing on unhandled network/socket/FS errors
+process.on('uncaughtException', (err) => {
+  console.error('[Companion Error] Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[Companion Error] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 const app = express();
 const client = new WebTorrent();
+
+// Register WebTorrent client error handler to avoid unhandled socket/tracker error bubble-up crashes
+client.on('error', (err) => {
+  console.error('[WebTorrent Client Error]:', err.message || err);
+});
 
 const PORT = 8444;
 
@@ -26,6 +40,10 @@ app.get('/stream', (req, res) => {
   let torrent = client.get(magnet);
 
   if (torrent) {
+    torrent.on('error', (err) => {
+      console.error(`[Torrent Error] Error on existing torrent:`, err.message || err);
+    });
+    
     if (torrent.ready) {
       console.log(`[Proxy] Torrent already exists and is ready. Preparing stream...`);
       handleTorrent(torrent, req, res);
@@ -38,9 +56,13 @@ app.get('/stream', (req, res) => {
     }
   } else {
     console.log(`[Proxy] New torrent requested. Adding to WebTorrent and fetching metadata...`);
-    client.add(magnet, (newTorrent) => {
-      console.log(`[Proxy] Torrent metadata fetched successfully! Name: ${newTorrent.name}`);
-      handleTorrent(newTorrent, req, res);
+    const newTorrent = client.add(magnet, (addedTorrent) => {
+      console.log(`[Proxy] Torrent metadata fetched successfully! Name: ${addedTorrent.name}`);
+      handleTorrent(addedTorrent, req, res);
+    });
+    
+    newTorrent.on('error', (err) => {
+      console.error(`[Torrent Error] Error on newly added torrent:`, err.message || err);
     });
   }
 });
