@@ -60,7 +60,9 @@ function handleTorrent(torrent, req, res) {
       'Content-Range': `bytes ${start}-${end}/${total}`,
       'Accept-Ranges': 'bytes',
       'Content-Length': chunksize,
-      'Content-Type': 'video/mp4' // Generic, could be improved
+      'Content-Type': 'video/mp4',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'Origin, X-Requested-With, Content-Type, Accept, Range'
     });
 
     stream.pipe(res);
