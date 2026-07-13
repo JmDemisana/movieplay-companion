@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const WebTorrent = require('webtorrent');
+const SysTray = require('systray2').default;
 
 const app = express();
 const client = new WebTorrent();
@@ -15,6 +16,8 @@ app.get('/status', (req, res) => {
 
 app.get('/stream', (req, res) => {
   const magnet = req.query.magnet;
+  console.log(`[Proxy] Received stream request for: ${magnet ? magnet.substring(0, 40) : 'none'}...`);
+  
   if (!magnet) {
     return res.status(400).send('Magnet link required');
   }
@@ -23,9 +26,20 @@ app.get('/stream', (req, res) => {
   let torrent = client.get(magnet);
 
   if (torrent) {
-    handleTorrent(torrent, req, res);
+    if (torrent.ready) {
+      console.log(`[Proxy] Torrent already exists and is ready. Preparing stream...`);
+      handleTorrent(torrent, req, res);
+    } else {
+      console.log(`[Proxy] Torrent exists but metadata is still fetching. Waiting...`);
+      torrent.once('ready', () => {
+        console.log(`[Proxy] Torrent metadata fetched for queued request! Name: ${torrent.name}`);
+        handleTorrent(torrent, req, res);
+      });
+    }
   } else {
+    console.log(`[Proxy] New torrent requested. Adding to WebTorrent and fetching metadata...`);
     client.add(magnet, (newTorrent) => {
+      console.log(`[Proxy] Torrent metadata fetched successfully! Name: ${newTorrent.name}`);
       handleTorrent(newTorrent, req, res);
     });
   }
@@ -39,7 +53,10 @@ function handleTorrent(torrent, req, res) {
     const idx = parseInt(req.query.fileIdx, 10);
     if (torrent.files[idx]) {
       file = torrent.files[idx];
+      console.log(`[Proxy] Selected specific file index ${idx}: ${file.name}`);
     }
+  } else {
+    console.log(`[Proxy] Auto-selected largest file: ${file.name} (${(file.length / 1024 / 1024).toFixed(2)} MB)`);
   }
 
   const total = file.length;
@@ -65,6 +82,9 @@ function handleTorrent(torrent, req, res) {
       'Access-Control-Allow-Headers': 'Origin, X-Requested-With, Content-Type, Accept, Range'
     });
 
+    req.on('close', () => stream.destroy());
+    stream.on('error', (err) => console.log(`[Proxy] Stream error: ${err.message}`));
+
     stream.pipe(res);
   } else {
     res.writeHead(200, {
@@ -73,6 +93,8 @@ function handleTorrent(torrent, req, res) {
     });
 
     const stream = file.createReadStream();
+    req.on('close', () => stream.destroy());
+    stream.on('error', (err) => console.log(`[Proxy] Stream error: ${err.message}`));
     stream.pipe(res);
   }
 }
@@ -80,4 +102,42 @@ function handleTorrent(torrent, req, res) {
 app.listen(PORT, () => {
   console.log(`MoviePlay Companion Server running on http://localhost:${PORT}`);
   console.log(`Leave this window open to stream P2P torrents to the MoviePlay web app.`);
+  
+  // Initialize System Tray
+  const systray = new SysTray({
+    menu: {
+      icon: "", // We can leave it blank for default or add a base64 icon later
+      title: "MoviePlay",
+      tooltip: "MoviePlay Companion",
+      items: [
+        {
+          title: "Proxy Running (Port 8444)",
+          tooltip: "The torrent proxy is active",
+          checked: true,
+          enabled: false
+        },
+        {
+          title: "Exit",
+          tooltip: "Close the companion app",
+          checked: false,
+          enabled: true
+        }
+      ]
+    },
+    debug: false,
+    copyDir: true // copies the binary to a temp dir so pkg can run it
+  });
+
+  systray.onClick(action => {
+    if (action.item.title === "Exit") {
+      systray.kill();
+      process.exit(0);
+    }
+  });
+
+  systray.ready().then(() => {
+    console.log('[SysTray] Started successfully');
+  }).catch(err => {
+    console.log('[SysTray] Failed to start:', err);
+  });
 });
