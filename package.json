@@ -1,0 +1,19 @@
+{
+  "name": "movieplay-companion",
+  "version": "1.0.0",
+  "description": "Local P2P to HTTP proxy for MoviePlay",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build": "pkg . --targets node18-win-x64 --out-path dist"
+  },
+  "bin": "server.js",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "webtorrent": "^2.1.33"
+  },
+  "devDependencies": {
+    "pkg": "^5.8.1"
+  }
+}
