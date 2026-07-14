@@ -90,6 +90,44 @@ app.get('/status', (req, res) => {
 
 app.get('/stream', (req, res) => {
   const magnet = req.query.magnet;
+  const directUrl = req.query.url;
+
+  if (directUrl) {
+    console.log(`[Proxy] Direct URL stream requested: ${directUrl}`);
+    if (!ffmpegPathResolved) {
+      console.warn(`[FFmpeg] FFmpeg is not active. Redirecting directly to the source URL...`);
+      return res.redirect(directUrl);
+    }
+
+    res.writeHead(200, {
+      'Content-Type': 'video/mp4',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'Origin, X-Requested-With, Content-Type, Accept, Range'
+    });
+
+    const ffmpegProcess = spawn(ffmpegPathResolved, [
+      '-i', directUrl,
+      '-c:v', 'copy', // Copy video codec directly (0% CPU cost!)
+      '-c:a', 'aac',  // Transcode audio to standard web-compatible AAC
+      '-b:a', '192k',
+      '-f', 'mp4',
+      '-movflags', 'frag_keyframe+empty_moov+faststart', // Fragmented playable MP4 output
+      'pipe:1'
+    ]);
+
+    req.on('close', () => {
+      console.log(`[FFmpeg] Connection closed. Stopping URL stream pipeline.`);
+      ffmpegProcess.kill('SIGKILL');
+    });
+
+    ffmpegProcess.on('error', (err) => {
+      console.error(`[FFmpeg] URL proxy process error:`, err.message);
+    });
+
+    ffmpegProcess.stdout.pipe(res);
+    return;
+  }
+
   console.log(`[Proxy] Received stream request for: ${magnet ? magnet.substring(0, 40) : 'none'}...`);
   
   if (!magnet) {
