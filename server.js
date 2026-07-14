@@ -88,6 +88,8 @@ app.get('/status', (req, res) => {
   });
 });
 
+const torrentStates = new Map(); // key: magnet, value: { activeStreams: number, destroyTimer: NodeJS.Timeout | null }
+
 app.get('/stream', (req, res) => {
   const magnet = req.query.magnet;
   const directUrl = req.query.url;
@@ -134,6 +136,20 @@ app.get('/stream', (req, res) => {
     return res.status(400).send('Magnet link required');
   }
 
+  // Reference-count active stream request
+  let state = torrentStates.get(magnet);
+  if (!state) {
+    state = { activeStreams: 0, destroyTimer: null };
+    torrentStates.set(magnet, state);
+  }
+  
+  state.activeStreams++;
+  if (state.destroyTimer) {
+    console.log(`[Proxy] Torrent active stream restored. Cancelling disk clean-up timer.`);
+    clearTimeout(state.destroyTimer);
+    state.destroyTimer = null;
+  }
+
   // Check if torrent is already added
   let torrent = client.get(magnet);
 
@@ -144,19 +160,19 @@ app.get('/stream', (req, res) => {
     
     if (torrent.ready) {
       console.log(`[Proxy] Torrent already exists and is ready. Preparing stream...`);
-      handleTorrent(torrent, req, res);
+      handleTorrent(torrent, magnet, req, res);
     } else {
       console.log(`[Proxy] Torrent exists but metadata is still fetching. Waiting...`);
       torrent.once('ready', () => {
         console.log(`[Proxy] Torrent metadata fetched for queued request! Name: ${torrent.name}`);
-        handleTorrent(torrent, req, res);
+        handleTorrent(torrent, magnet, req, res);
       });
     }
   } else {
     console.log(`[Proxy] New torrent requested. Adding to WebTorrent and fetching metadata...`);
     const newTorrent = client.add(magnet, (addedTorrent) => {
       console.log(`[Proxy] Torrent metadata fetched successfully! Name: ${addedTorrent.name}`);
-      handleTorrent(addedTorrent, req, res);
+      handleTorrent(addedTorrent, magnet, req, res);
     });
     
     newTorrent.on('error', (err) => {
@@ -165,7 +181,35 @@ app.get('/stream', (req, res) => {
   }
 });
 
-function handleTorrent(torrent, req, res) {
+function handleTorrent(torrent, magnet, req, res) {
+  let state = torrentStates.get(magnet) || { activeStreams: 1, destroyTimer: null };
+
+  let isCleanedUp = false;
+  const decrementActiveStreams = () => {
+    if (isCleanedUp) return;
+    isCleanedUp = true;
+    state.activeStreams--;
+    console.log(`[Proxy] Active streams for "${torrent.name}": ${state.activeStreams}`);
+    
+    if (state.activeStreams <= 0) {
+      console.log(`[Proxy] No active streams left for "${torrent.name}". Starting 2-minute disk clean-up timer...`);
+      state.destroyTimer = setTimeout(() => {
+        console.log(`[Proxy] Clean-up timer expired. Destroying torrent in-memory and deleting files from disk: ${torrent.name}`);
+        const activeTor = client.get(magnet);
+        if (activeTor) {
+          activeTor.destroy({ destroyStore: true }, (err) => {
+            if (err) console.error(`[Proxy] Error deleting files for "${torrent.name}":`, err);
+            else console.log(`[Proxy] Purged torrent download folder from disk successfully: "${torrent.name}"`);
+          });
+        }
+        torrentStates.delete(magnet);
+      }, 120 * 1000); // 2 minutes idle clean-up
+    }
+  };
+
+  req.on('close', decrementActiveStreams);
+  res.on('finish', decrementActiveStreams);
+
   // Find the largest file in the torrent (usually the video)
   let file = torrent.files.reduce((a, b) => (a.length > b.length ? a : b));
   
@@ -205,7 +249,6 @@ function handleTorrent(torrent, req, res) {
     ]);
 
     req.on('close', () => {
-      console.log(`[FFmpeg] Connection closed. Stopping stream pipelines.`);
       inputStream.destroy();
       ffmpegProcess.kill('SIGKILL');
     });
